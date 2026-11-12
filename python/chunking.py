@@ -1,70 +1,146 @@
-from pypdf import PdfReader
+from typing import TypedDict
+
+import pymupdf4llm
+import pymupdf
 import numpy as np
 import re
 import sys
+from pathlib import Path
+import json
+
+PAGES_SOMMAIRE = 3
+
+TITLE_SIZES = {"chapter": 40, "section": 16, "subsection": 10}
+TOLERANCE_SIZE = 0.5
+
+LEFT_COLUMN_MAX_X = 280
+
+class Chunk(TypedDict):
+    chapter: str
+    section: str
+    page: int
+    text: str
+    source: str #name of the providence file
 
 
-NOISE = {
-    re.compile(r'HYROX\s.*_26/27([ \t]+\d+)?[ \t]*'),
-    re.compile(r'^[ \t]*\d{1,2}[ \t]*(cm)?[ \t]*$', re.MULTILINE),
-    re.compile(r'FIG\s*\d+'),
-}
-
-def clean_text(text : str) -> str :
-    text_cleaned = text
-    for r in NOISE :
-        text_cleaned = re.sub(r, "", text_cleaned)
-    text_cleaned = re.sub(r'[ \t]+', ' ', text_cleaned)
-    text_cleaned = re.sub(r'\n{3,}', '\n\n', text_cleaned)
-    return text_cleaned
-
-def chunk_text (text : str, chunk_size : int = 1) -> list[str]:
+def chunk_text (chapter: str, section : str, text : str, page : int, source : str, chunk_size : int = 40, overlap : int = 20) -> list[Chunk]:
     """ 
-    chunk_size  : number of sentence per chunk
+    chunk_size  : number of words per chunk
     """
-    text = clean_text(text)
 
-    sentences = re.split(r'(?<=[?.!])\s+|\n\s*\n', text)
-    chunks = []
+    if overlap >= chunk_size:
+        raise ValueError("overlap must be smaller than chunk_size")
+
+    header = f"{chapter} > {section}" if section else chapter
+
+    words = text.split()
+    chunks: list[Chunk] = []
     start = 0
 
-    while start < len(sentences) : 
-        end = min(start + chunk_size, len(sentences))
-        chunk = ' '.join(sentences[start : end]).strip()
-        if chunk :
-            chunks.append(chunk)
-        start += chunk_size
+    while start < len(words) : 
+        end = min(start + chunk_size, len(words))
+        chunk = " ".join(words[start : end]).strip()
+        if chunk:
+            chunks.append({
+                "chapter": chapter,
+                "section": section,
+                "page": page,
+                "text": f"{header}\n{chunk}",
+                "source": source
+            })
+
+        if end == len(words):          # fin atteinte : pas de chunk en double
+            break
+        
+        start += chunk_size - overlap
 
     return chunks
 
-def doc_chunked (doc : str) -> list[str]:
+def level_size(size : int) -> bool :
+    for level in TITLE_SIZES :
+        if abs(size - TITLE_SIZES[level]) <= TOLERANCE_SIZE :
+            return level
+    return None
 
-    reader = PdfReader(doc)
+def clean(text: str) -> str:
+    return re.sub(r'\s+', ' ', text).strip()
 
-    text = ""
-    for i,page in enumerate(reader.pages) :
-        page = page.extract_text()
-        if i!= 0 and ("SOMMAIRE" not in page) :
-            text += (page or "") + "\n"
 
-    with open("../data/doc.tkt", 'w') as f :
-        f.write(text)
+def box_text(box: dict) -> str:
+    return clean(" ".join(span['text'] for line in box['textlines'] or [] for span in line['spans']))
 
-    return chunk_text(text)
 
+def box_titles(box: dict) -> tuple[str, str]:
+    chapter, section = "", ""
+    for line in box['textlines'] or []:
+        if line['bbox'][0] >= LEFT_COLUMN_MAX_X:
+            continue
+        for span in line['spans']:
+            level = level_size(span['size'])
+            if level == "chapter":
+                chapter += " " + span['text']
+            elif level is not None:
+                section += " " + span['text']
+    return clean(chapter), clean(section)
+
+
+def table_chunk(chapter: str, section: str, box: dict, page: int, source: str) -> Chunk:
+    return {
+        'chapter': chapter,
+        'section': section,
+        'page': page,
+        'text': box['table']['markdown'],
+        'source': source,
+    }
+
+
+def box_chunked(data: dict, source_file: str) -> list[Chunk]:
+    all_chunks: list[Chunk] = []
+    chapter = ""
+    section = ""
+    for page in data['pages'][PAGES_SOMMAIRE:]:
+        page_number = page['page_number']
+        for box in page['boxes']:
+            if box['boxclass'] in ('page-footer', 'picture', 'caption'):
+                continue
+
+            if box['boxclass'] not in ('text', 'table'):
+                new_chapter, new_section = box_titles(box)
+                if new_chapter:                      # nouveau chapitre : on vide la section
+                    chapter, section = new_chapter, ""
+                if new_section:
+                    section = new_section
+                if new_chapter or new_section:       # c'était une boîte de titre
+                    continue
+
+            if box['boxclass'] == 'table' and box['table']:
+                all_chunks.append(table_chunk(chapter, section, box, page_number, source_file))
+                continue
+
+            all_chunks.extend(chunk_text(chapter=chapter, section=section, text=box_text(box),
+                                         page=page_number, source=source_file))
+    return all_chunks
+
+def load_doc(pdf : str) :
+    path_pdf = Path(pdf)
+    if not path_pdf.exists() : 
+        print(f"File : {pdf} not found")
+        sys.exit(1)
+    
+    doc = pymupdf.open(path_pdf)
+    doc_json = doc.to_json(use_ocr=False)
+    
+    return json.loads(doc_json)
 
 if __name__ == "__main__" :
     try :
-        doc = (sys.argv[1])
-    except IndexError :
-        print(f"Usage : {sys.argv[0]} fichier.pdf")
+        pdf = (sys.argv[1])
+    except :
+        print(f"Usage : {sys.argv[0]} file.pdf")
         sys.exit(1)
-    except FileNotFoundError : 
-        print(f"Fichier introuvable : {sys.argv[1]}")
-        sys.exit(1)
-    
-    chunks = doc_chunked(doc)
 
-    for i,chunk in enumerate(chunks) :
-        if i>330 and i<335 : 
-            print(f"Chunk {i} : {chunk}")
+    data = load_doc(pdf)
+    final_chunks = box_chunked(data, pdf)
+    for i in range (5) : 
+        print(f"Chunks {i} : {final_chunks[i]}")
+        print()
