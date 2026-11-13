@@ -31,7 +31,11 @@ def chunk_text (chapter: str, section : str, text : str, page : int, source : st
     if overlap >= chunk_size:
         raise ValueError("overlap must be smaller than chunk_size")
 
-    header = f"{chapter} > {section}" if section else chapter
+    if section :
+        header = f"{chapter} > {section}" 
+    else :
+        header = chapter
+        section = chapter
 
     words = text.split()
     chunks: list[Chunk] = []
@@ -85,6 +89,8 @@ def box_titles(box: dict) -> tuple[str, str]:
 
 
 def table_chunk(chapter: str, section: str, box: dict, page: int, source: str) -> Chunk:
+    if not section : 
+        section = chapter 
     return {
         'chapter': chapter,
         'section': section,
@@ -117,9 +123,13 @@ def box_chunked(data: dict, source_file: str) -> list[Chunk]:
                 all_chunks.append(table_chunk(chapter, section, box, page_number, source_file))
                 continue
 
-            all_chunks.extend(chunk_text(chapter=chapter, section=section, text=box_text(box),
+            text = box_text(box)
+            if len(text) < 10 :
+                continue
+            all_chunks.extend(chunk_text(chapter=chapter, section=section, text=text,
                                          page=page_number, source=source_file))
     return all_chunks
+
 
 def load_doc(pdf : str) :
     path_pdf = Path(pdf)
@@ -132,6 +142,10 @@ def load_doc(pdf : str) :
     
     return json.loads(doc_json)
 
+def doc_chunked(pdf : str) -> list[Chunk] :
+    data = load_doc(pdf)
+    return box_chunked(data, pdf)
+
 if __name__ == "__main__" :
     try :
         pdf = (sys.argv[1])
@@ -140,7 +154,7 @@ if __name__ == "__main__" :
         sys.exit(1)
 
     data = load_doc(pdf)
-    final_chunks = box_chunked(data, pdf)
-    for i in range (5) : 
-        print(f"Chunks {i} : {final_chunks[i]}")
+    final_chunks = doc_chunked(pdf)
+    for i in range (10) : 
+        print(f"CHUNK {i} : {final_chunks[i]}")
         print()
