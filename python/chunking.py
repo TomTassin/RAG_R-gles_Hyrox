@@ -23,9 +23,10 @@ class Chunk(TypedDict):
     source: str #name of the providence file
 
 
-def chunk_text (chapter: str, section : str, text : str, page : int, source : str, chunk_size : int = 40, overlap : int = 20) -> list[Chunk]:
+def section_chunks (chapter: str, section : str, text : str, page : int, source : str, chunk_size : int = 100, overlap : int = 20) -> list[Chunk]:
     """ 
     chunk_size  : number of words per chunk
+    overlap : number of words repeated at the start of the next chunk
     """
 
     if overlap >= chunk_size:
@@ -44,14 +45,13 @@ def chunk_text (chapter: str, section : str, text : str, page : int, source : st
     while start < len(words) : 
         end = min(start + chunk_size, len(words))
         chunk = " ".join(words[start : end]).strip()
-        if chunk:
-            chunks.append({
-                "chapter": chapter,
-                "section": section,
-                "page": page,
-                "text": f"{header}\n{chunk}",
-                "source": source
-            })
+        chunks.append({
+            "chapter": chapter,
+            "section": section,
+            "page": page,
+            "text": f"{header}\n{chunk}",
+            "source": source
+        })
 
         if end == len(words):          # fin atteinte : pas de chunk en double
             break
@@ -100,34 +100,44 @@ def table_chunk(chapter: str, section: str, box: dict, page: int, source: str) -
     }
 
 
-def box_chunked(data: dict, source_file: str) -> list[Chunk]:
+def chunk_box(data: dict, source_file: str) -> list[Chunk]:
     all_chunks: list[Chunk] = []
     chapter = ""
     section = ""
+    section_page = PAGES_SOMMAIRE
+    text = ""
+
     for page in data['pages'][PAGES_SOMMAIRE:]:
         page_number = page['page_number']
         for box in page['boxes']:
             if box['boxclass'] in ('page-footer', 'picture', 'caption'):
                 continue
-
             if box['boxclass'] not in ('text', 'table'):
                 new_chapter, new_section = box_titles(box)
-                if new_chapter:                      # nouveau chapitre : on vide la section
-                    chapter, section = new_chapter, ""
-                if new_section:
-                    section = new_section
-                if new_chapter or new_section:       # c'était une boîte de titre
+                if new_chapter or new_section:       # boîte de titre : on découpe la section en cours
+                    all_chunks.extend(section_chunks(chapter=chapter, section=section, text=text,
+                                                        page=section_page, source=source_file))
+                    text = ""
+                    section_page = page_number
+                    if new_chapter:                  # nouveau chapitre : on vide la section
+                        chapter, section = new_chapter, ""
+                    if new_section:
+                        section = new_section
                     continue
 
             if box['boxclass'] == 'table' and box['table']:
                 all_chunks.append(table_chunk(chapter, section, box, page_number, source_file))
                 continue
 
-            text = box_text(box)
-            if len(text) < 10 :
+            b_text = box_text(box)
+            if len(b_text) < 10 :
                 continue
-            all_chunks.extend(chunk_text(chapter=chapter, section=section, text=text,
-                                         page=page_number, source=source_file))
+
+            text += " " + b_text
+
+    all_chunks.extend(section_chunks(chapter=chapter, section=section, text=text,
+                                        page=page_number, source=source_file))
+    
     return all_chunks
 
 
@@ -142,9 +152,9 @@ def load_doc(pdf : str) :
     
     return json.loads(doc_json)
 
-def doc_chunked(pdf : str) -> list[Chunk] :
+def chunk_pdf(pdf : str) -> list[Chunk] :
     data = load_doc(pdf)
-    return box_chunked(data, pdf)
+    return chunk_box(data, pdf)
 
 if __name__ == "__main__" :
     try :
@@ -154,7 +164,5 @@ if __name__ == "__main__" :
         sys.exit(1)
 
     data = load_doc(pdf)
-    final_chunks = doc_chunked(pdf)
-    for i in range (10) : 
-        print(f"CHUNK {i} : {final_chunks[i]}")
-        print()
+    final_chunks = chunk_pdf(pdf)
+    print(len(final_chunks))
