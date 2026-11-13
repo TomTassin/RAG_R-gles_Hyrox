@@ -2,7 +2,7 @@ import sys
 import re
 import numpy as np
 from sentence_transformers import SentenceTransformer, CrossEncoder
-from chunking import doc_chunked
+from chunking import chunk_pdf
 
 
 TOP_K = 10
@@ -31,7 +31,7 @@ if __name__ == "__main__":
 
     path_pdf = "../data/26_27_HYROX_RulebookDoubles_FR_210726.pdf"
 
-    chunks = doc_chunked(path_pdf)
+    chunks = chunk_pdf(path_pdf)
 
     bi_encoder, reranker = create_models()
 
